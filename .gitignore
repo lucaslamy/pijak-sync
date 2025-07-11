@@ -1,0 +1,6 @@
+credentials.json
+BackupDBs/*
+BackupDBs
+BackupResults/*
+BackupResults
+db/*
