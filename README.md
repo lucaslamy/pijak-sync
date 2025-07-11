@@ -1,5 +1,5 @@
 
-# 🗺️ pyjak-sync : Geotagged Tree Monitoring Map Generator
+# 🗺️ pijak-sync : Geotagged Tree Monitoring Map Generator
 
 This project processes multiple SQLite `.db` files containing geotagged tree monitoring data. It cleans and aggregates the data, enriches it using a Google Sheet (tree status), and generates:
 
