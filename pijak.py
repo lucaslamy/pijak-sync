@@ -136,12 +136,14 @@ def add_image_markers(map_object, image_points, group_name="Photos"):
                 # FOR LOCAL DEV : 
                 img_path = pictures_folder + '/' + file_path
 
+            full_res_img_path = pictures_folder + '/' + file_path
+
             if not os.path.exists(img_path) and not isThumbnailsEnabled :
                 print(f"⚠️ File not found: {img_path}")
                 continue
 
             popup_html = f'''
-            <a href="{img_path}" target="_blank">
+            <a href="{full_res_img_path}" target="_blank">
                 <img data-src="{img_path}" 
                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" 
                     style="max-width:600px; max-height:400px; display:block;"                         class="lazy-image">
@@ -237,6 +239,11 @@ favicon = Element('''
 <link rel="icon" href="favicon.ico" type="image/x-icon">
 ''')
 m.get_root().html.add_child(favicon)
+
+title = Element('''
+<title>🌱 Mangrove Project</title>
+''')
+m.get_root().html.add_child(title)
 
 m.add_child(AssignMapToWindow())
 folium.TileLayer(
