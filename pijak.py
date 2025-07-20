@@ -21,6 +21,10 @@ from PIL.ExifTags import TAGS, GPSTAGS
 import subprocess
 import urllib.request
 
+# Var 
+# FOR PRODUCTION : TRUE IF YOU HAVE THUMBNAILS, FALSE IF LOCAL DEV : 
+isThumbnailsEnabled = False
+
 # 🔧 Output paths
 output_csv = "geotagged_tree_aggregated_latest.csv"
 output_geojson = "geotagged_tree.geojson"
@@ -117,18 +121,22 @@ def extract_gps_from_images(folder="pictures"):
         lon = dms_to_decimal(item.get('GPSLongitude'))
         filename = item.get("SourceFile")
         if lat and lon:
-            # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
-            #image_points.append((lat, lon, os.path.join('pictures/thumbnails/tn_', os.path.basename(filename))))
-            # FOR LOCAL DEV : 
-            image_points.append((lat, lon, os.path.join(pictures_folder, os.path.basename(filename))))
+            image_points.append((lat, lon, os.path.basename(filename)))
     return image_points
 
 def add_image_markers(map_object, image_points, group_name="Photos"):
     feature_group = folium.FeatureGroup(name=group_name, show=False)
 
-    for lat, lon, img_path in image_points:
+    for lat, lon, file_path in image_points:
         try:
-            if not os.path.exists(img_path):
+            if isThumbnailsEnabled:
+                # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
+                img_path = 'pictures/thumbnails/tn_' + file_path
+            else:
+                # FOR LOCAL DEV : 
+                img_path = pictures_folder + '/' + file_path
+
+            if not os.path.exists(img_path) and not isThumbnailsEnabled :
                 print(f"⚠️ File not found: {img_path}")
                 continue
 
@@ -285,10 +293,12 @@ for _, row in df_pijak.iterrows():
             except Exception as e:
                 print(f"❌ Failed to download image for {row['Kode']}: {e}")
         
-        # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
-        #thumbnail_path = f"pijak_foto/thumbnails/tn_{local_filename}"
-        # FOR LOCAL DEV : 
-        thumbnail_path = local_path
+        if isThumbnailsEnabled:
+            # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
+            thumbnail_path = f"pijak_foto/thumbnails/tn_{local_filename}"
+        else:
+            # FOR LOCAL DEV : 
+            thumbnail_path = local_path
 
         # Si l'image est bien présente localement ou a été téléchargée
         if os.path.isfile(local_path):
