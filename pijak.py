@@ -117,6 +117,9 @@ def extract_gps_from_images(folder="pictures"):
         lon = dms_to_decimal(item.get('GPSLongitude'))
         filename = item.get("SourceFile")
         if lat and lon:
+            # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
+            #image_points.append((lat, lon, os.path.join('pictures/thumbnails/tn_', os.path.basename(filename))))
+            # FOR LOCAL DEV : 
             image_points.append((lat, lon, os.path.join(pictures_folder, os.path.basename(filename))))
     return image_points
 
@@ -130,15 +133,13 @@ def add_image_markers(map_object, image_points, group_name="Photos"):
                 continue
 
             popup_html = f'''
-                <a href="{img_path}" target="_blank">
-                    <img src="{img_path}" style="
-                        max-width: 600px;
-                        max-height: 400px;
-                        display: block;
-                    ">
-                </a>
+            <a href="{img_path}" target="_blank">
+                <img data-src="{img_path}" 
+                    src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" 
+                    style="max-width:600px; max-height:400px; display:block;"                         class="lazy-image">
+            </a>
             '''
-            popup = folium.Popup(popup_html, max_width=650)
+            popup = folium.Popup(popup_html, width=400, max_height=500)
 
             folium.Marker(
                 location=[lat, lon],
@@ -265,15 +266,17 @@ tree_layer.add_to(m)
 # 🌳 Current DB layer
 pijak_layer = folium.FeatureGroup(name="Current DB")
 missing_images = []
+
 for _, row in df_pijak.iterrows():
     html = f"<b>Kode:</b> {row['Kode']}<br><b>Status:</b> {row['Tree Status']}"
-
     foto_path = row.get("Foto 1")
     img_tag = "<br><em>Picture not available</em>"
 
     if foto_path:
         local_filename = os.path.basename(foto_path)
         local_path = os.path.join(pijak_pictures_folder, local_filename)
+        
+        # Téléchargement si image manquante localement
         if not os.path.isfile(local_path):
             try:
                 print(f"⬇️ Downloading missing image for {row['Kode']} from {foto_path}...")
@@ -281,23 +284,38 @@ for _, row in df_pijak.iterrows():
                 print(f"✅ Image saved to {local_path}")
             except Exception as e:
                 print(f"❌ Failed to download image for {row['Kode']}: {e}")
+        
+        # FOR PRODUCTION WHEN YOU HAVE THUMBNAILS : 
+        #thumbnail_path = f"pijak_foto/thumbnails/tn_{local_filename}"
+        # FOR LOCAL DEV : 
+        thumbnail_path = local_path
 
+        # Si l'image est bien présente localement ou a été téléchargée
         if os.path.isfile(local_path):
-            try:
-                with open(local_path, 'rb') as img_file:
-                    ext = os.path.splitext(local_path)[-1][1:].lower()
-                    img_tag = f"<br><a href='{foto_path}' target='_blank'><img src='{local_path}' width='150'></a>"
-            except Exception as e:
-                print(f"⚠️ Failed to load local image for {row['Kode']}: {e}")
+            # Utilisation d’un placeholder transparent et lazy-loading
+            img_tag = f"""
+            <br><a href="{foto_path}" target="_blank">
+                <img data-src="{thumbnail_path}" 
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" 
+                     width="150"
+                     class="lazy-image"
+                >
+            </a>
+            """
         else:
             missing_images.append(foto_path)
-            img_tag = f"<br><a href='{foto_path}' target='_blank'><img src='{foto_path}' width='150'></a>"
-
-    if missing_images:
-        print("🚫 Missing local images :", missing_images)
+            img_tag = f"""
+            <br><a href="{foto_path}" target="_blank">
+                <img data-src="{thumbnail_path}" 
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" 
+                     width="150"
+                     class="lazy-image"
+                >
+            </a>
+            """
 
     html += img_tag
-  
+
     folium.CircleMarker(
         location=(row["Latitude"], row["Longitude"]),
         radius=6,
@@ -307,9 +325,14 @@ for _, row in df_pijak.iterrows():
         fill_opacity=0.85,
         weight=1.5,
         popup=folium.Popup(html, max_width=250),
-        tooltip=row["Kode"] 
+        tooltip=row["Kode"]
     ).add_to(pijak_layer)
+
+if missing_images:
+    print("🚫 Missing local images :", missing_images)
+
 pijak_layer.add_to(m)
+
 
 image_points = extract_gps_from_images(pictures_folder)
 add_image_markers(m, image_points, group_name="Geotagged Photos")
@@ -613,6 +636,24 @@ legend_html = """
 
 {% endmacro %}
 """
+
+lazy_load_script = """
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    window.map.on('popupopen', function (e) {
+        var popup = e.popup;
+        var imgs = popup._contentNode.querySelectorAll("img.lazy-image");
+        imgs.forEach(function (img) {
+            if (img.dataset.src) {
+                img.src = img.dataset.src;
+                img.removeAttribute("data-src");
+            }
+        });
+    });
+});
+</script>
+"""
+m.get_root().html.add_child(folium.Element(lazy_load_script))
 
 legend = MacroElement()
 legend._template = Template(legend_html)
