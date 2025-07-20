@@ -1,0 +1,11 @@
+Pillow
+sqlite3
+pandas
+folium
+re
+simplekml
+json
+gspread
+google.oauth2.service_account
+branca
+jinja2

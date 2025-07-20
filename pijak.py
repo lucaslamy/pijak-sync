@@ -1,23 +1,40 @@
 import sqlite3
 import pandas as pd
 import folium
-from folium.plugins import Fullscreen
+import base64
+import re
+from folium.plugins import Fullscreen, Search
 from folium import Element
+from folium.plugins import HeatMap
+from folium import IFrame
+from folium.plugins import FeatureGroupSubGroup
 import simplekml
 import json
 import os
 from glob import glob
 import gspread
 from google.oauth2.service_account import Credentials
+from branca.element import MacroElement
+from jinja2 import Template
+from PIL import Image, ExifTags
+from PIL.ExifTags import TAGS, GPSTAGS
+import subprocess
+import urllib.request
 
 # 🔧 Output paths
 output_csv = "geotagged_tree_aggregated_latest.csv"
 output_geojson = "geotagged_tree.geojson"
 output_kml = "geotagged_tree.kml"
+output_geojson_pijak = "pijak_tree.geojson"
+output_kml_pijak = "pijak_tree.kml"
 
 # 📁 Folder with .db files
 db_folder = './db'
 csv_files = []
+
+pictures_folder = "pictures"
+pijak_pictures_folder = "pijak_foto"
+image_markers = folium.FeatureGroup(name="Photos EXIF", show=False)
 
 # 📄 SQL Query
 query = """
@@ -38,6 +55,109 @@ SELECT
 FROM tree t
 JOIN tree_monitoring tm ON t.id = tm.treeId;
 """
+
+class AssignMapToWindow(MacroElement):
+    def __init__(self):
+        super().__init__()
+        self._template = Template("""
+            {% macro script(this, kwargs) %}
+                window.map = {{this._parent.get_name()}};
+            {% endmacro %}
+        """)
+        
+# 🎨 Marker colors
+def get_color_tuple(status):
+    s = str(status).strip().lower()
+    if s == "dead": return ("red", "red")
+    elif s == "alive": return ("green", "green")
+    return ("black", "#ccc")
+    
+def remap_kode(k):
+    match = re.match(r"MAN-(\d+)", str(k).strip().upper())
+    if match:
+        num = int(match.group(1))
+        return f"JJK-{num:03d}"
+    return k 
+
+def dms_to_decimal(dms_str):
+    if not isinstance(dms_str, str):
+        raise ValueError(f"Coordonnée DMS invalide : {dms_str}")
+    
+    dms_regex = r"(\d+)\D+(\d+)\D+([\d.]+)\D+([NSEW])"
+    match = re.match(dms_regex, dms_str)
+    if not match:
+        raise ValueError(f"Format DMS non reconnu : {dms_str}")
+    
+    degrees, minutes, seconds, direction = match.groups()
+    decimal = float(degrees) + float(minutes) / 60 + float(seconds) / 3600
+    if direction in ['S', 'W']:
+        decimal *= -1
+    return decimal
+
+def extract_gps_from_images(folder="pictures"):
+    cmd = [
+        "exiftool",
+        "-gpslatitude",
+        "-gpslongitude",
+        "-filename",
+        "-json",
+        folder
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise RuntimeError("ExifTool error: " + result.stderr)
+    
+    data = json.loads(result.stdout)
+    image_points = []
+    for item in data:
+        if not item.get('GPSLatitude') or not item.get('GPSLongitude'):
+            continue
+
+        lat = dms_to_decimal(item.get('GPSLatitude'))
+        lon = dms_to_decimal(item.get('GPSLongitude'))
+        filename = item.get("SourceFile")
+        if lat and lon:
+            image_points.append((lat, lon, os.path.join(pictures_folder, os.path.basename(filename))))
+    return image_points
+
+def add_image_markers(map_object, image_points, group_name="Photos"):
+    feature_group = folium.FeatureGroup(name=group_name, show=False)
+
+    for lat, lon, img_path in image_points:
+        try:
+            if not os.path.exists(img_path):
+                print(f"⚠️ File not found: {img_path}")
+                continue
+
+            popup_html = f'''
+                <a href="{img_path}" target="_blank">
+                    <img src="{img_path}" style="
+                        max-width: 600px;
+                        max-height: 400px;
+                        display: block;
+                    ">
+                </a>
+            '''
+            popup = folium.Popup(popup_html, max_width=650)
+
+            folium.Marker(
+                location=[lat, lon],
+                popup=popup,
+                icon=folium.Icon(color="blue", icon="camera", prefix="fa")
+            ).add_to(feature_group)
+
+        except Exception as e:
+            print(f"❌ Could not load image {img_path}: {e}")
+    
+    feature_group.add_to(map_object)
+
+
+def get_pijak_colors(status):
+    s = str(status).strip().lower()
+    if s == 'dead': return ('#990000', '#ff9999')
+    elif s == 'alive': return ('#006600', '#66ff66')
+    return ('#666666', '#cccccc')
+
 
 # 🔁 Process each .db
 db_paths = glob(os.path.join(db_folder, "*.db"))
@@ -87,38 +207,42 @@ df_status.columns = ['code', 'status']
 # 🔗 Merge status
 df_latest = df_latest.merge(df_status, on="code", how="left")
 df_latest["status"] = df_latest["status"].fillna("Unknown")
-
-# 🎨 Marker colors
-def get_color_tuple(status):
-    s = str(status).strip().lower()
-    if s == "dead":
-        return ("red", "red")
-    elif s == "alive":
-        return ("green", "green")
-    return ("black", "#ccc")
-
 df_latest[["border_color", "fill_color"]] = df_latest["status"].apply(lambda s: pd.Series(get_color_tuple(s)))
 df_latest.to_csv(output_csv, index=False)
 
-# 🗺️ Create map
+# 📚 Load Pijak DB
+df_pijak = pd.DataFrame(gc.open(SHEET_NAME).worksheet("Pijak DB").get_all_records())
+df_pijak = df_pijak[df_pijak['Status'].str.lower().str.strip().str.contains("geotag")]
+df_pijak['Latitude'] = pd.to_numeric(df_pijak['Latitude'], errors='coerce')
+df_pijak['Longitude'] = pd.to_numeric(df_pijak['Longitude'], errors='coerce')
+df_pijak = df_pijak.dropna(subset=['Latitude', 'Longitude'])
+df_pijak['Kode'] = df_pijak['Kode'].apply(remap_kode)
+df_pijak[["border_color", "fill_color"]] = df_pijak["Tree Status"].apply(lambda s: pd.Series(get_pijak_colors(s)))
+
+# 🌍 Create map
 center_lat = df_latest["latitude"].mean()
 center_lon = df_latest["longitude"].mean()
-m = folium.Map(location=[center_lat, center_lon], zoom_start=13, control_scale=True, tiles="OpenStreetMap")
+m = folium.Map(location=[center_lat, center_lon], zoom_start=16, control_scale=True, tiles="OpenStreetMap")
 
+favicon = Element('''
+<link rel="icon" href="favicon.ico" type="image/x-icon">
+''')
+m.get_root().html.add_child(favicon)
+
+m.add_child(AssignMapToWindow())
 folium.TileLayer(
     name="Satellite",
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attr="Tiles © Esri"
 ).add_to(m)
-
 Fullscreen(position="topright").add_to(m)
 
 # 📍 Markers
-code_to_latlon = {}
+tree_layer = folium.FeatureGroup(name="Previous DB", show=False)
+marker_dict = {}
 for _, row in df_latest.iterrows():
     coord = (row["latitude"], row["longitude"])
-    code_to_latlon[row["code"]] = coord
-    folium.CircleMarker(
+    marker = folium.CircleMarker(
         location=coord,
         radius=5,
         color=row["border_color"],
@@ -128,85 +252,143 @@ for _, row in df_latest.iterrows():
         weight=1,
         popup=folium.Popup(
             f"<b>ID:</b> {row['tree_id']}<br>"
-            f"<b>Name:</b> {row['tree_name']}<br>"
             f"<b>Code:</b> {row['code']}<br>"
             f"<b>Status:</b> {row['status']}",
             max_width=250
-        )
-    ).add_to(m)
+        ),
+        tooltip=row["code"]
+    )
+    marker.add_to(tree_layer)
+    marker_dict[row['code']] = marker
+tree_layer.add_to(m)
 
-# 📊 Summary + search
-total = len(df_latest)
-dead = (df_latest['fill_color'] == 'red').sum()
-alive = (df_latest['fill_color'] == 'green').sum()
-unknown = (df_latest['fill_color'] == '#ccc').sum()
+# 🌳 Current DB layer
+pijak_layer = folium.FeatureGroup(name="Current DB")
+missing_images = []
+for _, row in df_pijak.iterrows():
+    html = f"<b>Kode:</b> {row['Kode']}<br><b>Status:</b> {row['Tree Status']}"
 
-search_js_dict = ",\n".join([f'"{code}": [{lat}, {lon}]' for code, (lat, lon) in code_to_latlon.items()])
-m.get_root().html.add_child(Element(f"""
-<div style="position: absolute; bottom: 20px; left: 10px; z-index: 9999;
-     background: white; padding: 12px 15px; border-radius: 8px;
-     box-shadow: 0 0 5px rgba(0,0,0,0.3); font-family: sans-serif; font-size: 14px;">
-<b>Total:</b> {total} |
-<span style='color:red'>Dead: {dead}</span> |
-<span style='color:green'>Alive: {alive}</span> |
-<span style='color:gray'>Unknown: {unknown}</span><br><br>
-<input type="text" id="searchBox" placeholder="Search code..."
- style="padding:4px; width:160px;">
-</div>
+    foto_path = row.get("Foto 1")
+    img_tag = "<br><em>Picture not available</em>"
+
+    if foto_path:
+        local_filename = os.path.basename(foto_path)
+        local_path = os.path.join(pijak_pictures_folder, local_filename)
+        if not os.path.isfile(local_path):
+            try:
+                print(f"⬇️ Downloading missing image for {row['Kode']} from {foto_path}...")
+                urllib.request.urlretrieve(foto_path, local_path)
+                print(f"✅ Image saved to {local_path}")
+            except Exception as e:
+                print(f"❌ Failed to download image for {row['Kode']}: {e}")
+
+        if os.path.isfile(local_path):
+            try:
+                with open(local_path, 'rb') as img_file:
+                    ext = os.path.splitext(local_path)[-1][1:].lower()
+                    img_tag = f"<br><a href='{foto_path}' target='_blank'><img src='{local_path}' width='150'></a>"
+            except Exception as e:
+                print(f"⚠️ Failed to load local image for {row['Kode']}: {e}")
+        else:
+            missing_images.append(foto_path)
+            img_tag = f"<br><a href='{foto_path}' target='_blank'><img src='{foto_path}' width='150'></a>"
+
+    if missing_images:
+        print("🚫 Missing local images :", missing_images)
+
+    html += img_tag
+  
+    folium.CircleMarker(
+        location=(row["Latitude"], row["Longitude"]),
+        radius=6,
+        color=row['border_color'],
+        fill=True,
+        fill_color=row['fill_color'],
+        fill_opacity=0.85,
+        weight=1.5,
+        popup=folium.Popup(html, max_width=250),
+        tooltip=row["Kode"] 
+    ).add_to(pijak_layer)
+pijak_layer.add_to(m)
+
+image_points = extract_gps_from_images(pictures_folder)
+add_image_markers(m, image_points, group_name="Geotagged Photos")
+
+df_pijak['Lat_bin'] = (df_pijak['Latitude'] * 10000).round() / 10000
+df_pijak['Lon_bin'] = (df_pijak['Longitude'] * 10000).round() / 10000
+
+zone_stats = df_pijak.groupby(['Lat_bin', 'Lon_bin']).agg(
+    Mort=('Tree Status', lambda x: (x == 'Dead').sum()),
+    Vivant=('Tree Status', lambda x: (x == 'Alive').sum()),
+    Latitude=('Latitude', 'mean'),
+    Longitude=('Longitude', 'mean')
+).reset_index()
+
+zone_stats['ratio'] = zone_stats['Mort'] / zone_stats['Vivant'].replace(0, 1)
+
+max_ratio = 10.0
+zone_stats['ratio_norm'] = zone_stats['ratio'].clip(upper=max_ratio) / max_ratio
+zone_stats = zone_stats[(zone_stats['Mort'] + zone_stats['Vivant']) >= 3]
+
+
+heat_data = [
+    [row['Latitude'], row['Longitude'], min(row['ratio_norm'] * 1.2, 1.0)]
+    for _, row in zone_stats.iterrows()
+]
+
+gradient = {
+    0.0: 'transparent',  
+    0.25: 'darkgreen',   
+    0.5: 'yellowgreen',  
+    0.7: 'orange',
+    0.85: 'orangered',
+    1.0: 'red'            
+}
+
+
+HeatMap(
+    heat_data,
+    min_opacity=0.6,      
+    radius=12,          
+    blur=4,               
+    max_zoom=18,
+    gradient=gradient,
+    name="Heatmap (Dead/Alive Ratio)"
+).add_to(m)
+
+
+# Fix window.map
+fix_map_js = """
 <script>
-const codeCoordinates = {{
-{search_js_dict}
-}};
-document.getElementById("searchBox").addEventListener("keypress", function(e) {{
-    if (e.key === "Enter") {{
-        const code = this.value.trim().toUpperCase();
-        const coords = codeCoordinates[code];
-        if (coords) {{
-            const circle = L.circleMarker(coords, {{
-                radius: 12,
-                color: 'black',
-                fillColor: 'orange',
-                fillOpacity: 0.7
-            }}).addTo(window.map);
-            circle.bindPopup("Code: " + code).openPopup();
-            window.map.setView(coords, 18, {{ animate: true }});
-        }} else {{
-            alert("Code not found.");
-        }}
-    }}
-}});
+document.addEventListener("DOMContentLoaded", function() {
+    const mapDiv = document.querySelector("div[id^='map_']");
+    if (mapDiv && mapDiv._leaflet_map) {
+        window.map = mapDiv._leaflet_map;
+    }
+});
 </script>
-"""))
+"""
+m.get_root().html.add_child(Element(fix_map_js))
 
-# 🏷️ Legend
-m.get_root().html.add_child(Element("""
-<div style="
-     position: fixed;
-     bottom: 200px;
-     left: 10px;
-     z-index: 9999;
-     background-color: white;
-     padding: 10px;
-     border: 2px solid grey;
-     border-radius: 8px;
-     box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
-     font-family: sans-serif;
-     font-size: 14px;
-">
+# 🧭 Layer + Legend
+total = len(df_pijak)
+dead = (df_pijak['Tree Status'] == 'Dead').sum()
+alive = (df_pijak['Tree Status'] == 'Alive').sum()
+total_pct = f"{total/4103:.2%}"
+dead_pct = f"{dead/total:.2%}"
+alive_pct = f"{alive/total:.2%}"
+
+folium.LayerControl(collapsed=False).add_to(m)
+
+m.get_root().html.add_child(Element(f"""
+<div style="position: fixed; bottom: 120px; left: 10px; z-index: 9999; background-color: white; padding: 10px; border: 2px solid grey; border-radius: 8px; font-size: 14px;">
 <b>Legend</b><br>
-<span style="display:inline-block;width:12px;height:12px;background-color:red;margin-right:5px;"></span> Dead<br>
-<span style="display:inline-block;width:12px;height:12px;background-color:green;margin-right:5px;"></span> Alive<br>
-<span style="display:inline-block;width:12px;height:12px;background-color:#ccc;border:1px solid black;margin-right:5px;"></span> Unknown
+<b>Total geo-tagged with Pijak:</b> {total}/4103 ({total_pct})<br>
+<span style='background-color:#ff9999;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Dead: {dead} ({dead_pct})<br>
+<span style='background-color:#66ff66;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Alive: {alive} ({alive_pct})<br>
 </div>
 """))
 
-# 🛠 JS map ref
-m.get_root().script.add_child(Element("""
-document.addEventListener("DOMContentLoaded", function () {
-    const mapId = document.querySelector("div[id^='map_']").id;
-    window.map = window[mapId.replace("-", "_")];
-});
-"""))
 
 # 📥 Download button (CSV + KML)
 download_menu = f"""
@@ -215,18 +397,242 @@ download_menu = f"""
     <summary style="cursor: pointer; font-weight: bold;">📥 Downloads</summary>
     <div style="margin-top: 8px; line-height: 1.6;">
       <a href="{output_csv}" download>📄 Download CSV</a><br>
-      <a href="{output_kml}" download>🌍 Download KML</a>
+      <a href="{output_geojson}" download>🌍 Download Local GeoJSON</a><br>
+      <a href="{output_kml}" download>🌍 Download Local KML</a><br>
+      <a href="{output_geojson_pijak}" download>🌍 Download Pijak GeoJSON</a><br>
+      <a href="{output_kml_pijak}" download>🌍 Download Pijak KML</a>
     </div>
   </details>
 </div>
 """
 m.get_root().html.add_child(Element(download_menu))
 
+search_html = """
+<style>
+    #searchContainer {
+        position: fixed;
+        bottom: 60px;
+        left: 10px;
+        z-index: 9999;
+        background-color: white;
+        padding: 8px 12px;
+        border-radius: 8px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.3);
+        font-family: sans-serif;
+        width: 220px;
+    }
+    #searchInput {
+        width: 100%;
+        padding: 5px;
+        font-size: 14px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+    }
+    #autocompleteList {
+        position: absolute;
+        top: 38px;
+        left: 10px;
+        background-color: white;
+        border: 1px solid #ccc;
+        border-top: none;
+        max-height: 180px;
+        overflow-y: auto;
+        width: 220px;
+        z-index: 99999;
+        display: none;
+    }
+    .autocompleteItem {
+        padding: 6px 10px;
+        cursor: pointer;
+    }
+    .autocompleteItem:hover {
+        background-color: #f0f0f0;
+    }
+</style>
+
+<div id="searchContainer">
+    <input type="text" id="searchInput" placeholder="🔍 Search code..." autocomplete="off"/>
+    <div id="autocompleteList"></div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    window.markersByStatus = {
+        "alive": [],
+        "dead": [],
+        "unknown": []
+    };
+
+    Object.values(window.map._layers).forEach(layer => {
+        if (layer instanceof L.CircleMarker && layer.options && layer.options.fillColor) {
+            const fillColor = layer.options.fillColor.toLowerCase();
+            if (fillColor === "#66ff66") {
+                window.markersByStatus.alive.push(layer);
+            } else if (fillColor === "#ff9999") {
+                window.markersByStatus.dead.push(layer);
+            } else {
+                window.markersByStatus.unknown.push(layer);
+            }
+        }
+    });
+
+    const codeToLayer = {};
+
+    // Scan tous les layers pour extraire les codes des tooltips
+    Object.values(window.map._layers).forEach(layer => {
+        if (layer.getTooltip && layer.getTooltip()) {
+            let raw = layer.getTooltip()._content;
+            if (raw) {
+                // Nettoie le code (strip balises HTML, trim, minuscule)
+                const clean = raw.replace(/<[^>]+>/g, '').trim();
+                if (clean) {
+                    codeToLayer[clean] = layer;
+                }
+            }
+        }
+    });
+
+    const input = document.getElementById('searchInput');
+    const list = document.getElementById('autocompleteList');
+    const codeList = Object.keys(codeToLayer);
+
+    input.addEventListener('input', function () {
+        const query = this.value;
+        list.innerHTML = '';
+        if (!query) {
+            list.style.display = 'none';
+            return;
+        }
+
+        const matches = codeList.filter(c => c.includes(query));
+        matches.slice(0, 20).forEach(match => {
+            const item = document.createElement('div');
+            item.className = 'autocompleteItem';
+            item.textContent = match;
+            item.onclick = function () {
+                input.value = match;
+                list.style.display = 'none';
+
+                const layer = codeToLayer[match];
+                if (layer) {
+                    const latlng = layer.getLatLng();
+                    window.map.setView(latlng, 19);
+                    layer.openPopup();
+                }
+            };
+            list.appendChild(item);
+        });
+
+        list.style.display = matches.length > 0 ? 'block' : 'none';
+    });
+
+    document.addEventListener('click', function (e) {
+        if (!document.getElementById('searchContainer').contains(e.target)) {
+            list.style.display = 'none';
+        }
+    });
+});
+</script>
+
+"""
+
+m.get_root().html.add_child(folium.Element(search_html))
+
+fix_map_js = """
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const mapDiv = document.querySelector("div[id^='map_']");
+    if (mapDiv && mapDiv._leaflet_map) {
+        window.map = mapDiv._leaflet_map;
+    }
+});
+</script>
+"""
+m.get_root().html.add_child(Element(fix_map_js))
+
+status_filter_html = """
+<div style="position: fixed; top: 187px; left: 10px; z-index: 9999; background: white; padding: 10px;
+    border-radius: 8px; border: 1px solid #aaa; font-family: sans-serif; box-shadow: 2px 2px 6px rgba(0,0,0,0.2);">
+    <b>🧪 Filter Status</b><br>
+    <label><input type="radio" name="statusFilter" value="all" checked> All</label><br>
+    <label><input type="radio" name="statusFilter" value="alive"> Alive</label><br>
+    <label><input type="radio" name="statusFilter" value="dead"> Dead</label><br>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const radios = document.querySelectorAll('input[name="statusFilter"]');
+
+    function updateVisibility(status) {
+        for (const s in window.markersByStatus) {
+            window.markersByStatus[s].forEach(marker => {
+                if (status === "all" || s === status) {
+                    marker.setStyle({ opacity: 1, fillOpacity: 0.85 });
+                } else {
+                    marker.setStyle({ opacity: 0, fillOpacity: 0 });
+                }
+            });
+        }
+    }
+
+    radios.forEach(radio => {
+        radio.addEventListener("change", function () {
+            updateVisibility(this.value);
+        });
+    });
+});
+</script>
+"""
+m.get_root().html.add_child(Element(status_filter_html))
+
+legend_html = """
+{% macro html(this, kwargs) %}
+
+<div style="
+    position: fixed; 
+    bottom: 45px;
+    right: 45px;
+    width: 240px;
+    height: auto;
+    z-index:9999;
+    background-color: white;
+    border:2px solid grey;
+    border-radius:8px;
+    padding: 12px;
+    font-size: 14px;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+">
+    <b>Dead / Alive Tree Ratio</b><br>
+    <i>(normalized, max = 10:1)</i><br><br>
+    <div><span style="background-color: darkgreen; width: 20px; height: 12px; display: inline-block;"></span> &nbsp;Low mortality (≤ 2.5:1)</div>
+    <div><span style="background-color: yellowgreen; width: 20px; height: 12px; display: inline-block;"></span> &nbsp;Moderate (2.5:1 – 5:1)</div>
+    <div><span style="background-color: orange; width: 20px; height: 12px; display: inline-block;"></span> &nbsp;High (5:1 – 7:1)</div>
+    <div><span style="background-color: orangered; width: 20px; height: 12px; display: inline-block;"></span> &nbsp;Very high (7:1 – 8.5:1)</div>
+    <div><span style="background-color: red; width: 20px; height: 12px; display: inline-block;"></span> &nbsp;Extreme (≥ 8.5:1)</div>
+</div>
+
+{% endmacro %}
+"""
+
+legend = MacroElement()
+legend._template = Template(legend_html)
+m.get_root().add_child(legend)
+
+m.save("tree_map.html")
+
+with open("tree_map.html", "r", encoding="utf-8") as f:
+    html = f.read()
+
+html = re.sub(r'^\s*window\.map\s*=\s*element_[a-f0-9]+;\s*$', '', html, flags=re.MULTILINE)
+
+if not html.lstrip().lower().startswith("<!doctype html>"):
+    html = "<!DOCTYPE html>\n" + html
+
 # 💾 Save map
 m.save("tree_map.html")
 print("✅ Map saved: tree_map.html")
 
-# 🌐 Export GeoJSON
+# 🌐 Export GEOJSON Combined
 geojson = {
     "type": "FeatureCollection",
     "features": []
@@ -239,15 +645,54 @@ for _, row in df_latest.iterrows():
             "tree_id": row["tree_id"],
             "tree_name": row["tree_name"],
             "code": row["code"],
-            "status": row["status"]
+            "status": row["status"],
+            "source": "DB"
+        }
+    })
+for _, row in df_pijak.iterrows():
+    geojson["features"].append({
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [row["Longitude"], row["Latitude"]]},
+        "properties": {
+            "tree_name": row["Nama pohon"],
+            "code": row["Kode"],
+            "status": row["Tree Status"],
+            "source": "PIJAK"
         }
     })
 with open(output_geojson, "w", encoding="utf-8") as f:
     json.dump(geojson, f, indent=2)
 
-# 🌍 Export KML
+# 🌐 Export GEOJSON Pijak Only
+geojson_pijak = {
+    "type": "FeatureCollection",
+    "features": []
+}
+for _, row in df_pijak.iterrows():
+    geojson_pijak["features"].append({
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [row["Longitude"], row["Latitude"]]},
+        "properties": {
+            "tree_name": row["Nama pohon"],
+            "code": row["Kode"],
+            "status": row["Tree Status"]
+        }
+    })
+with open(output_geojson_pijak, "w", encoding="utf-8") as f:
+    json.dump(geojson_pijak, f, indent=2)
+
+# 🌍 Export KML Combined
 kml = simplekml.Kml()
 for _, row in df_latest.iterrows():
-    kml.newpoint(name=str(row["code"]), description=row["tree_name"], coords=[(row["longitude"], row["latitude"])])
+    kml.newpoint(name=str(row["code"]), description=f"[DB] {row['tree_name']}", coords=[(row["longitude"], row["latitude"])])
+for _, row in df_pijak.iterrows():
+    kml.newpoint(name=str(row["Kode"]), description=f"[PIJAK] {row['Nama pohon']}", coords=[(row["Longitude"], row["Latitude"])])
 kml.save(output_kml)
-print("✅ KML exported.")
+
+# 🌍 Export KML Pijak Only
+kml_pijak = simplekml.Kml()
+for _, row in df_pijak.iterrows():
+    kml_pijak.newpoint(name=str(row["Kode"]), description=row["Nama pohon"], coords=[(row["Longitude"], row["Latitude"])])
+kml_pijak.save(output_kml_pijak)
+
+print("✅ Map and exports generated.")

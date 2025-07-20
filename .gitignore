@@ -4,3 +4,8 @@ BackupDBs
 BackupResults/*
 BackupResults
 db/*
+geotagged_tree*
+*.kml
+*.geojson
+pictures/*
+pijak_foto/*
