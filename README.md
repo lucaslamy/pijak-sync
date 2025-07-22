@@ -143,6 +143,22 @@ This will:
 ## Google Sheet Script
 
 ```javascript
+function deleteColumnsWithHeaders() {
+  const headersToDelete = ["JJK Code", "Tree Status", "Checkbox"]; // Headers to look for
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Pijak DB");
+  if (!sheet) {
+    Logger.log("Sheet 'Pijak DB' not found.");
+    return;
+  }  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+  // Loop from right to left to avoid index shifting when deleting columns
+  for (let col = headers.length - 1; col >= 0; col--) {
+    if (headersToDelete.includes(headers[col])) {
+      sheet.deleteColumn(col + 1); // +1 because sheet columns are 1-indexed
+    }
+  }
+}
+
 function countColoredCellsInAllGroupSheets() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = spreadsheet.getSheets();
@@ -178,6 +194,7 @@ function countColoredCellsInAllGroupSheets() {
   generateTreeStatus();
   generateTreeStatusPijak();
   enrichPijakDBfromTreeStatus();
+  generateMissingTags();
 }
 
 
@@ -317,6 +334,8 @@ function enrichPijakDBfromTreeStatus() {
     throw new Error("One of the sheets 'Pijak DB' or 'TreeStatusPijak' is missing.");
   }
 
+  deleteColumnsWithHeaders();
+  
   // Step 1: Read headers
   let header = pijakSheet.getRange(1, 1, 1, pijakSheet.getLastColumn()).getValues()[0];
   const kodeIndex = header.indexOf("Kode");
@@ -345,6 +364,7 @@ function enrichPijakDBfromTreeStatus() {
   // Step 4: Read existing data
   const pijakData = pijakSheet.getRange(2, 1, pijakSheet.getLastRow() - 1, header.length).getValues();
   const newData = [updatedHeader];
+
 
   for (let i = 0; i < pijakData.length; i++) {
     const row = pijakData[i];
@@ -376,7 +396,66 @@ function enrichPijakDBfromTreeStatus() {
   }
 
   pijakSheet.getRange(1, 1, rowCount, colCount).setValues(newData);
+
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Total").getRange("C8").setFormula('=COUNTIFS(\'Pijak DB\'!K:K, "Dead", \'Pijak DB\'!F:F, "Geotaged")');
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Total").getRange("F11").setFormula('=COUNTIFS(\'Pijak DB\'!L:L, "Unchecked", \'Pijak DB\'!F:F, "Kosong")');
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Total").getRange("F13").setFormula('=COUNTIFS(\'Pijak DB\'!L:L, "Checked", \'Pijak DB\'!F:F, "Kosong")');
 }
+
+function generateMissingTags() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = spreadsheet.getSheets();
+  const targetRange = "A1:R101";
+  const result = [];
+
+  const backlogSheet = spreadsheet.getSheetByName("Tags still not deployed (backlog)");
+  const backlogValues = backlogSheet.getDataRange().getValues().flat();
+
+  const waterSheet = spreadsheet.getSheetByName("Tags found in water");
+  const waterValues = waterSheet.getDataRange().getValues().flat();
+
+  sheets.forEach(sheet => {
+    const sheetName = sheet.getName();
+    if (sheetName.startsWith("Group")) {
+      const range = sheet.getRange(targetRange);
+      const values = range.getValues();
+
+      for (let row = 0; row < values.length; row++) {
+        for (let col = 0; col < values[row].length - 1; col++) {
+          const value = values[row][col];
+
+          if (typeof value === 'string' && value.startsWith("JJK")) {
+            const checkbox = values[row][col + 1];
+
+            if (checkbox === false) {
+              const inBacklog = backlogValues.includes(value);
+              const inWater = waterValues.includes(value);
+
+              const needToLaminate = !(inBacklog || inWater);
+
+              result.push([value, "No", inBacklog, inWater, needToLaminate]);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  let outputSheet = spreadsheet.getSheetByName("Tags Missing (need to laminate)");
+  if (outputSheet) {
+    outputSheet.clear();
+  } else {
+    outputSheet = spreadsheet.insertSheet("Tags Missing (need to laminate)");
+  }
+
+  outputSheet.getRange(1, 1, 1, 5).setValues([["Tree ID", "Taged ?", "In backlog?", "Found in water?", "Need to laminate?"]]);
+
+  if (result.length > 0) {
+    outputSheet.getRange(2, 1, result.length, 5).setValues(result);
+  }
+}
+
+
 ```
 ---
 

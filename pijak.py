@@ -245,6 +245,11 @@ title = Element('''
 ''')
 m.get_root().html.add_child(title)
 
+meta_viewport = Element('''
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+''')
+m.get_root().html.add_child(meta_viewport)
+
 m.add_child(AssignMapToWindow())
 folium.TileLayer(
     name="Satellite",
@@ -421,18 +426,18 @@ alive_pct = f"{alive/total:.2%}"
 folium.LayerControl(collapsed=False).add_to(m)
 
 m.get_root().html.add_child(Element(f"""
-<div style="position: fixed; bottom: 120px; left: 10px; z-index: 9999; background-color: white; padding: 10px; border: 2px solid grey; border-radius: 8px; font-size: 14px;">
-<b>Legend</b><br>
-<b>Total geo-tagged with Pijak:</b> {total}/4103 ({total_pct})<br>
-<span style='background-color:#ff9999;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Dead: {dead} ({dead_pct})<br>
-<span style='background-color:#66ff66;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Alive: {alive} ({alive_pct})<br>
+<div id="legendTotal" style="position: fixed; bottom: 200px; left: 10px; z-index: 9999; background-color: white; padding: 10px; border: 2px solid grey; border-radius: 8px; font-size: 14px;">
+    <b>Legend</b><br>
+    <b>Total geo-tagged with Pijak:</b> {total}/4103 ({total_pct})<br>
+    <span style='background-color:#ff9999;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Dead: {dead} ({dead_pct})<br>
+    <span style='background-color:#66ff66;width:12px;height:12px;display:inline-block;margin-right:5px;'></span> Alive: {alive} ({alive_pct})<br>
 </div>
 """))
 
 
 # 📥 Download button (CSV + KML)
 download_menu = f"""
-<div style="position: absolute; top: 10px; left: 10px; z-index: 9999;">
+<div id="downloadMenu" style="position: fixed; top: 10px; left: 10px; z-index: 9999998;">
   <details style="background: white; padding: 10px; border-radius: 8px; box-shadow: 1px 1px 5px #aaa;">
     <summary style="cursor: pointer; font-weight: bold;">📥 Downloads</summary>
     <div style="margin-top: 8px; line-height: 1.6;">
@@ -447,11 +452,11 @@ download_menu = f"""
 """
 m.get_root().html.add_child(Element(download_menu))
 
-search_html = """
+search_html = """bottom
 <style>
     #searchContainer {
         position: fixed;
-        bottom: 60px;
+        top: 60px;
         left: 10px;
         z-index: 9999;
         background-color: white;
@@ -591,7 +596,7 @@ document.addEventListener("DOMContentLoaded", function() {
 m.get_root().html.add_child(Element(fix_map_js))
 
 status_filter_html = """
-<div style="position: fixed; top: 187px; left: 10px; z-index: 9999; background: white; padding: 10px;
+<div id="statusFilter" style="position: fixed; top: 170px; left: 10px; z-index: 9999; background: white; padding: 10px;
     border-radius: 8px; border: 1px solid #aaa; font-family: sans-serif; box-shadow: 2px 2px 6px rgba(0,0,0,0.2);">
     <b>🧪 Filter Status</b><br>
     <label><input type="radio" name="statusFilter" value="all" checked> All</label><br>
@@ -628,10 +633,10 @@ m.get_root().html.add_child(Element(status_filter_html))
 legend_html = """
 {% macro html(this, kwargs) %}
 
-<div style="
+<div id="legendContainer" style="
     position: fixed; 
-    bottom: 45px;
-    right: 45px;
+    bottom: 17px;
+    right: 10px;
     width: 240px;
     height: auto;
     z-index:9999;
@@ -671,6 +676,104 @@ document.addEventListener("DOMContentLoaded", function () {
 </script>
 """
 m.get_root().html.add_child(folium.Element(lazy_load_script))
+
+toggle_controls_html = """
+<div style="position: fixed; top: 10px; left: 127px; z-index: 9999999;">
+  <details style="background: white; padding: 10px; border-radius: 8px; box-shadow: 1px 1px 5px #aaa; width: 104px;font-size: 13px !important;">
+    <summary style="cursor: pointer; font-weight: bold;">🛠️ UI Options</summary>
+    <div style="margin-top: 8px; line-height: 1.6;">
+      <label><input type="checkbox" checked id="toggleLegend"> Legend (heatmap)</label><br>
+      <label><input type="checkbox" checked id="toggleTotal"> Legend (count)</label><br>
+      <label><input type="checkbox" checked id="toggleLayerControl"> Layer Control</label><br>
+      <label><input type="checkbox" checked id="toggleStatusFilter"> Status Filter</label><br>
+    </div>
+  </details>
+</div>
+"""
+
+m.get_root().html.add_child(folium.Element(toggle_controls_html))
+
+toggle_controls_script = """
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    function toggleVisibility(id, checked) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.style.display = checked ? "block" : "none";
+        }
+    }
+
+    document.getElementById("toggleLegend").addEventListener("change", function () {
+        toggleVisibility("legendContainer", this.checked);
+    });
+    document.getElementById("toggleTotal").addEventListener("change", function () {
+            const legend = document.evaluate('//*[@id="legendTotal"]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            legend.style.display = this.checked ? "block" : "none";
+    });
+    document.getElementById("toggleLayerControl").addEventListener("change", function () {
+        const controls = document.querySelectorAll(".leaflet-control-layers");
+        controls.forEach(el => el.style.display = this.checked ? "block" : "none");
+    });
+
+    document.getElementById("toggleStatusFilter").addEventListener("change", function () {
+        toggleVisibility("statusFilter", this.checked);
+    });
+});
+</script>
+"""
+m.get_root().html.add_child(folium.Element(toggle_controls_script))
+
+# Responsiveness
+responsive_css = """
+<style>
+.leaflet-popup-content img {
+    max-width: 100% !important;
+    height: auto !important;
+    display: block;
+    margin: auto;
+}
+
+@media screen and (max-width: 600px) {
+    #searchContainer, 
+    #autocompleteList,
+    #statusFilter,
+    #legendContainer,
+    #downloadMenu {
+        left: 2.5vw !important;
+        font-size: 13px !important;
+    }
+
+    #searchInput {
+        font-size: 13px;
+    }
+
+    .autocompleteItem {
+        font-size: 13px;
+    }
+
+    .leaflet-popup-content img {
+        max-width: 90vw !important;
+        height: auto !important;
+    }
+
+    .leaflet-control-layers {
+        font-size: 13px;
+    }
+
+    div[style*="position: fixed; bottom: 120px"] {
+        font-size: 13px;
+        max-width: 90vw;
+        left: 5vw !important;
+    }
+
+    .leaflet-popup-content {
+        width: auto !important;
+        max-width: 90vw !important;
+    }
+}
+</style>
+"""
+m.get_root().html.add_child(Element(responsive_css))
 
 legend = MacroElement()
 legend._template = Template(legend_html)
