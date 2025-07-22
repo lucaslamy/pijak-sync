@@ -254,9 +254,22 @@ m.add_child(AssignMapToWindow())
 folium.TileLayer(
     name="Satellite",
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Tiles © Esri"
+    attr="Tiles © Esri",
+    max_zoom=21,
+    min_zoom=0
 ).add_to(m)
+
 Fullscreen(position="topright").add_to(m)
+
+folium.TileLayer(
+    name="Satellite (Google)",
+    tiles="http://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+    attr="Google Satellite",
+    max_zoom=21,
+    min_zoom=0,
+    overlay=False,
+    control=True
+).add_to(m)
 
 # 📍 Markers
 tree_layer = folium.FeatureGroup(name="Previous DB", show=False)
