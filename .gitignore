@@ -9,3 +9,5 @@ geotagged_tree*
 *.geojson
 pictures/*
 pijak_foto/*
+pijak-venv2
+pijak-venv2/*

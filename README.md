@@ -59,7 +59,9 @@ This tool:
 Install with:
 
 ```bash
-pip install pandas folium simplekml gspread oauth2client pillow
+python3.10 -m venv pijak-venv
+source pijak-venv/bin/activate
+pip install pandas folium simplekml gspread oauth2client pillow ee geemap
 ```
 
 Or, using `requirements.txt`:

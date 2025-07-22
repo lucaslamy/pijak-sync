@@ -1,4 +1,7 @@
 Pillow
+ee
+geemap
+setuptools
 sqlite3
 pandas
 folium
